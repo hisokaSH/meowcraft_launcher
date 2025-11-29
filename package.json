@@ -1,6 +1,6 @@
 {
   "name": "meowcraft-launcher",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Custom Minecraft launcher for MeowCraft Cobblemon server",
   "main": "dist-electron/main.js",
   "author": "csx",
