@@ -1,0 +1,625 @@
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import * as path from 'path';
+import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as https from 'https';
+import { Authflow, Titles } from 'prismarine-auth';
+
+// Discord RPC
+const DiscordRPC = require('discord-rpc');
+const clientId = '1234567890123456789'; // Replace with your Discord app client ID
+const rpc = new DiscordRPC.Client({ transport: 'ipc' });
+
+let mainWindow: BrowserWindow | null = null;
+let discordConnected = false;
+
+// Configuration
+const INSTANCE_NAME = 'Cobblemon';  // Changed from 'MeowCraft' to match ZIP contents
+const SERVER_ADDRESS = 'meowcraft.net';
+const INSTANCE_DOWNLOAD_URL = 'https://github.com/hisokaSH/meowcraft_modpack/releases/download/v1/Cobblemon-instance.zip';
+
+// Get Prism Launcher path (bundled in app)
+function getPrismPath(): string {
+  const isProduction = app.isPackaged;
+  
+  if (!isProduction) {
+    // Development: use current working directory
+    return path.join(process.cwd(), 'prism-launcher', 'PrismLauncher.exe');
+  } else {
+    // Production: look in the resources folder
+    if (process.platform === 'win32') {
+      return path.join(process.resourcesPath, 'prism-launcher', 'PrismLauncher.exe');
+    } else if (process.platform === 'darwin') {
+      return path.join(process.resourcesPath, 'prism-launcher', 'PrismLauncher.app', 'Contents', 'MacOS', 'PrismLauncher');
+    } else {
+      return path.join(process.resourcesPath, 'prism-launcher', 'PrismLauncher');
+    }
+  }
+}
+
+// Get bundled Prism data directory
+function getBundledPrismDataPath(): string {
+  const isProduction = app.isPackaged;
+  
+  if (!isProduction) {
+    return path.join(process.cwd(), 'prism-data');
+  } else {
+    return path.join(process.resourcesPath, 'prism-data');
+  }
+}
+
+// Get Prism Launcher data directory
+function getPrismDataDir(): string {
+  if (process.platform === 'win32') {
+    return path.join(os.homedir(), 'AppData', 'Roaming', 'PrismLauncher');
+  } else if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'PrismLauncher');
+  } else {
+    return path.join(os.homedir(), '.local', 'share', 'PrismLauncher');
+  }
+}
+
+// Initialize Prism data directory with bundled config
+function initializePrismData() {
+  const prismDataDir = getPrismDataDir();
+  const bundledDataPath = getBundledPrismDataPath();
+  
+  // Create Prism data directory if it doesn't exist
+  if (!fs.existsSync(prismDataDir)) {
+    fs.mkdirSync(prismDataDir, { recursive: true });
+  }
+  
+  // Copy config file if it doesn't exist
+  const configFile = 'prismlauncher.cfg';
+  const sourceConfig = path.join(bundledDataPath, configFile);
+  const destConfig = path.join(prismDataDir, configFile);
+  
+  if (fs.existsSync(sourceConfig) && !fs.existsSync(destConfig)) {
+    try {
+      fs.copyFileSync(sourceConfig, destConfig);
+      console.log('Prism config initialized');
+    } catch (error) {
+      console.error('Failed to copy Prism config:', error);
+    }
+  }
+}
+
+// Create an offline account in Prism's accounts.json
+function createOfflineAccount(username: string): boolean {
+  const prismDataDir = getPrismDataDir();
+  const accountsFile = path.join(prismDataDir, 'accounts.json');
+  
+  try {
+    // Create data dir if it doesn't exist
+    if (!fs.existsSync(prismDataDir)) {
+      fs.mkdirSync(prismDataDir, { recursive: true });
+    }
+    
+    let accounts: any = {
+      accounts: [],
+      formatVersion: 3
+    };
+    
+    // Read existing accounts if file exists
+    if (fs.existsSync(accountsFile)) {
+      try {
+        const data = fs.readFileSync(accountsFile, 'utf8');
+        accounts = JSON.parse(data);
+      } catch (error) {
+        console.error('Error reading accounts.json, will create new:', error);
+      }
+    }
+    
+    // Check if account already exists
+    const existingAccount = accounts.accounts?.find((acc: any) => 
+      acc.profile?.name === username || acc.userName === username
+    );
+    
+    if (existingAccount) {
+      console.log('Offline account already exists:', username);
+      return true;
+    }
+    
+    // Create new offline account
+    const newAccount = {
+      active: true,
+      type: "Offline",
+      userName: username,
+      profile: {
+        name: username,
+        id: `offline-${username}`
+      }
+    };
+    
+    // Add to accounts list
+    if (!accounts.accounts) {
+      accounts.accounts = [];
+    }
+    accounts.accounts.push(newAccount);
+    
+    // Set as active account
+    accounts.activeAccount = username;
+    
+    // Write back to file
+    fs.writeFileSync(accountsFile, JSON.stringify(accounts, null, 2), 'utf8');
+    console.log('✓ Created offline account:', username);
+    
+    return true;
+  } catch (error) {
+    console.error('✗ Failed to create offline account:', error);
+    return false;
+  }
+}
+
+// Download file from URL with progress tracking
+async function downloadFile(url: string, dest: string, progressCallback?: (progress: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    https.get(url, (response) => {
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        // Handle redirect
+        if (response.headers.location) {
+          downloadFile(response.headers.location, dest, progressCallback).then(resolve).catch(reject);
+          return;
+        }
+      }
+      
+      const totalSize = parseInt(response.headers['content-length'] || '0', 10);
+      let downloadedSize = 0;
+      
+      const file = fs.createWriteStream(dest);
+      
+      response.on('data', (chunk) => {
+        downloadedSize += chunk.length;
+        if (totalSize > 0 && progressCallback) {
+          const progress = Math.floor((downloadedSize / totalSize) * 100);
+          progressCallback(progress);
+        }
+      });
+      
+      response.pipe(file);
+      
+      file.on('finish', () => {
+        file.close();
+        resolve();
+      });
+      
+      file.on('error', (err) => {
+        fs.unlink(dest, () => {});
+        reject(err);
+      });
+    }).on('error', (err) => {
+      fs.unlink(dest, () => {});
+      reject(err);
+    });
+  });
+}
+
+// Unzip file
+async function unzipFile(zipPath: string, destPath: string): Promise<void> {
+  const AdmZip = require('adm-zip');
+  const zip = new AdmZip(zipPath);
+  zip.extractAllTo(destPath, true);
+}
+
+// Check and download instance if needed
+async function ensureInstanceExists(): Promise<boolean> {
+  const prismDataDir = getPrismDataDir();
+  const instancesDir = path.join(prismDataDir, 'instances');
+  const instanceDir = path.join(instancesDir, INSTANCE_NAME);
+  
+  // Check if instance already exists
+  if (fs.existsSync(instanceDir)) {
+    return true;
+  }
+  
+  // Create directories if they don't exist
+  if (!fs.existsSync(instancesDir)) {
+    fs.mkdirSync(instancesDir, { recursive: true });
+  }
+  
+  try {
+    // Notify renderer that download is starting
+    if (mainWindow) {
+      mainWindow.webContents.send('instance-download-progress', {
+        stage: 'downloading',
+        progress: 0,
+        message: 'Starting download...'
+      });
+    }
+    
+    // Download instance
+    const tempZip = path.join(os.tmpdir(), 'meowcraft-instance.zip');
+    
+    await downloadFile(INSTANCE_DOWNLOAD_URL, tempZip, (progress) => {
+      // Send progress to renderer
+      if (mainWindow) {
+        mainWindow.webContents.send('instance-download-progress', {
+          stage: 'downloading',
+          progress: progress,
+          message: `Downloading modpack... ${progress}%`
+        });
+      }
+    });
+    
+    // Notify extraction started
+    if (mainWindow) {
+      mainWindow.webContents.send('instance-download-progress', {
+        stage: 'extracting',
+        progress: 100,
+        message: 'Extracting files... Please wait...'
+      });
+    }
+    
+    // Extract instance
+    await unzipFile(tempZip, instancesDir);
+    
+    // Notify completion
+    if (mainWindow) {
+      mainWindow.webContents.send('instance-download-progress', {
+        stage: 'complete',
+        progress: 100,
+        message: 'Installation complete!'
+      });
+    }
+    
+    // Clean up
+    fs.unlinkSync(tempZip);
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to download instance:', error);
+    
+    // Notify error
+    if (mainWindow) {
+      mainWindow.webContents.send('instance-download-progress', {
+        stage: 'error',
+        progress: 0,
+        message: 'Download failed. Please check your internet connection.'
+      });
+    }
+    
+    return false;
+  }
+}
+
+// Launch Minecraft through Prism Launcher
+function launchMinecraft(instanceName: string, username: string = 'Player'): any {
+  const prismPath = getPrismPath();
+  
+  console.log('=== LAUNCHING MINECRAFT ===');
+  console.log('Prism path:', prismPath);
+  console.log('Instance:', instanceName);
+  console.log('Username:', username);
+  
+  if (!fs.existsSync(prismPath)) {
+    console.error('✗ Prism Launcher not found at:', prismPath);
+    return { success: false, error: 'Prism Launcher not found' };
+  }
+  
+  // Step 1: Create offline account in Prism
+  console.log('Step 1: Creating offline account...');
+  const accountCreated = createOfflineAccount(username);
+  if (!accountCreated) {
+    console.error('✗ Failed to create offline account');
+    return { success: false, error: 'Failed to create offline account' };
+  }
+  
+  // Step 2: Verify instance exists
+  const prismDataDir = getPrismDataDir();
+  const instanceDir = path.join(prismDataDir, 'instances', instanceName);
+  
+  console.log('Step 2: Verifying instance...');
+  console.log('Instance path:', instanceDir);
+  console.log('Instance exists:', fs.existsSync(instanceDir));
+  
+  if (!fs.existsSync(instanceDir)) {
+    console.error('✗ Instance not found at:', instanceDir);
+    return { success: false, error: 'Game instance not found. Please wait for download to complete.' };
+  }
+  
+  // Check instance.cfg exists
+  const instanceCfg = path.join(instanceDir, 'instance.cfg');
+  if (!fs.existsSync(instanceCfg)) {
+    console.error('✗ instance.cfg not found. Instance may be corrupted.');
+    return { success: false, error: 'Game instance is corrupted. Please reinstall.' };
+  }
+  console.log('✓ Instance validated');
+
+  try {
+    // Step 3: Launch Prism (simplified - let Prism use the active account)
+    console.log('Step 3: Launching Prism...');
+    
+    const args = [
+      '--launch', instanceName
+    ];
+    
+    // Only add server if it's not already configured in the instance
+    // (Your instance already has meowcraft.net configured, so we can skip this)
+    // if (SERVER_ADDRESS) {
+    //   args.push('--server', SERVER_ADDRESS);
+    // }
+    
+    console.log('Launch args:', args);
+
+    // Spawn Prism with shell to properly handle the command
+    const prismProcess = spawn(prismPath, args, {
+      detached: true,
+      stdio: 'ignore',
+      cwd: path.dirname(prismPath),
+      shell: true  // Use shell to execute like PowerShell does
+    });
+
+    prismProcess.unref();
+
+    console.log('✓ Prism process started with PID:', prismProcess.pid);
+    console.log('===========================');
+    
+    // Give it a moment to start, then minimize MeowCraft
+    setTimeout(() => {
+      // Minimize MeowCraft launcher when game starts
+      if (mainWindow) {
+        mainWindow.minimize();
+      }
+    }, 2000);
+
+    // Update Discord RPC when game launches
+    if (discordConnected) {
+      updateDiscordPresence('Playing on MeowCraft', 'Catching Pokémon');
+    }
+
+    return { success: true, message: 'Launching Minecraft...' };
+  } catch (error: any) {
+    console.error('✗ Error launching Prism:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Discord Rich Presence
+async function initDiscordRPC() {
+  try {
+    await rpc.login({ clientId });
+    discordConnected = true;
+    updateDiscordPresence('In Launcher', 'Getting ready');
+    console.log('Discord RPC connected successfully');
+    return { success: true };
+  } catch (error: any) {
+    // Discord not running - this is fine, just disable RPC silently
+    discordConnected = false;
+    return { success: false, error: 'Discord not running (this is OK)' };
+  }
+}
+
+function updateDiscordPresence(details: string, state: string) {
+  if (!discordConnected) return;
+
+  rpc.setActivity({
+    details,
+    state,
+    largeImageKey: 'meowcraft_logo',
+    largeImageText: 'MeowCraft Server',
+    instance: false,
+    startTimestamp: Date.now()
+  }).catch(() => {
+    // Silently fail if Discord disconnects
+    discordConnected = false;
+  });
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1000,
+    height: 700,
+    frame: false,
+    transparent: false,
+    resizable: false,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+      preload: path.join(__dirname, 'preload.js')
+    },
+    icon: path.join(__dirname, '../public/icon.png')
+  });
+
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+app.whenReady().then(() => {
+  // Initialize Prism data directory with bundled config
+  initializePrismData();
+  
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    if (discordConnected) {
+      rpc.destroy();
+    }
+    app.quit();
+  }
+});
+
+// IPC Handlers
+
+// Window controls
+ipcMain.on('minimize-window', () => {
+  mainWindow?.minimize();
+});
+
+ipcMain.on('close-window', () => {
+  mainWindow?.close();
+});
+
+// Microsoft Authentication - REAL OAuth
+let authflow: Authflow | null = null;
+
+ipcMain.handle('microsoft-login', async () => {
+  try {
+    // Create cache directory for auth tokens
+    const cacheDir = path.join(app.getPath('userData'), 'auth-cache');
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+
+    // Initialize Authflow with proper options
+    authflow = new Authflow('MeowCraft', cacheDir, {
+      authTitle: Titles.MinecraftJava,
+      deviceType: 'Win32',
+      flow: 'live'
+    });
+
+    // This will open a browser window for Microsoft login
+    const account = await authflow.getMinecraftJavaToken({ fetchProfile: true });
+    
+    if (account && account.profile) {
+      return {
+        success: true,
+        account: {
+          username: account.profile.name,
+          uuid: account.profile.id,
+          type: 'microsoft',
+          accessToken: account.token,
+          profile: account.profile
+        }
+      };
+    } else {
+      return { success: false, error: 'Login failed or was cancelled' };
+    }
+  } catch (error: any) {
+    console.error('Microsoft login error:', error);
+    return { success: false, error: error.message || 'Microsoft login failed' };
+  }
+});
+
+// Offline/Cracked Authentication
+ipcMain.handle('offline-login', async (event, username: string) => {
+  if (!username || username.length < 3 || username.length > 16) {
+    return { success: false, error: 'Username must be between 3 and 16 characters' };
+  }
+
+  return {
+    success: true,
+    account: {
+      username: username,
+      uuid: 'offline-' + username,
+      type: 'offline'
+    }
+  };
+});
+
+// Launch game
+ipcMain.handle('launch-game', async (event, accountData) => {
+  console.log('Launch game requested with account:', accountData);
+  
+  // Ensure instance exists
+  const instanceReady = await ensureInstanceExists();
+  if (!instanceReady) {
+    return { success: false, error: 'Failed to download game instance' };
+  }
+
+  // Launch with the provided username (or default to 'Player')
+  const username = accountData?.username || 'Player';
+  const result = launchMinecraft(INSTANCE_NAME, username);
+  
+  return result;
+});
+
+// Discord RPC
+ipcMain.handle('init-discord', async () => {
+  return await initDiscordRPC();
+});
+
+ipcMain.handle('update-discord', async (event, details: string, state: string) => {
+  updateDiscordPresence(details, state);
+  return { success: true };
+});
+
+// Check if Prism Launcher is bundled
+ipcMain.handle('check-prism', async () => {
+  const prismPath = getPrismPath();
+  const exists = fs.existsSync(prismPath);
+  
+  console.log('=== PRISM LAUNCHER CHECK ===');
+  console.log('Looking for Prism at:', prismPath);
+  console.log('Exists:', exists);
+  console.log('Is packaged:', app.isPackaged);
+  console.log('Process cwd:', process.cwd());
+  if (!app.isPackaged) {
+    console.log('Development mode - expecting prism-launcher/PrismLauncher.exe');
+  }
+  console.log('===========================');
+  
+  return {
+    installed: exists,
+    path: prismPath
+  };
+});
+
+// Download instance
+ipcMain.handle('download-instance', async () => {
+  try {
+    const success = await ensureInstanceExists();
+    return { success };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Diagnostic handler to check Prism setup
+ipcMain.handle('diagnose-prism', async () => {
+  const prismDataDir = getPrismDataDir();
+  const instancesDir = path.join(prismDataDir, 'instances');
+  const instanceDir = path.join(instancesDir, INSTANCE_NAME);
+  
+  const diagnosis = {
+    prismDataDir: prismDataDir,
+    prismDataDirExists: fs.existsSync(prismDataDir),
+    
+    instancesDir: instancesDir,
+    instancesDirExists: fs.existsSync(instancesDir),
+    
+    instanceDir: instanceDir,
+    instanceExists: fs.existsSync(instanceDir),
+    
+    instanceFiles: [] as string[],
+    
+    accountsFile: path.join(prismDataDir, 'accounts.json'),
+    accountsFileExists: fs.existsSync(path.join(prismDataDir, 'accounts.json')),
+    
+    configFile: path.join(prismDataDir, 'prismlauncher.cfg'),
+    configFileExists: fs.existsSync(path.join(prismDataDir, 'prismlauncher.cfg'))
+  };
+  
+  // Check instance files
+  if (fs.existsSync(instanceDir)) {
+    try {
+      diagnosis.instanceFiles = fs.readdirSync(instanceDir);
+    } catch (error) {
+      diagnosis.instanceFiles = [`Error: ${error}`];
+    }
+  }
+  
+  console.log('=== PRISM DIAGNOSTIC ===');
+  console.log(JSON.stringify(diagnosis, null, 2));
+  console.log('========================');
+  
+  return diagnosis;
+});
+
+export {};

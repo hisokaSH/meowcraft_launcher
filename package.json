@@ -1,0 +1,99 @@
+{
+  "name": "meowcraft-launcher",
+  "version": "1.0.0",
+  "description": "Custom Minecraft launcher for MeowCraft Cobblemon server",
+  "main": "dist-electron/main.js",
+  "author": "csx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hisokaSH/meowcraft_launcher.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "build:win": "tsc && vite build && electron-builder --win",
+    "build:portable": "tsc && vite build && electron-builder --win --dir",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron:build": "tsc && vite build && electron-builder",
+    "publish": "tsc && vite build && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.10",
+    "discord-rpc": "^4.0.1",
+    "electron-updater": "^6.6.2",
+    "minecraft-launcher-core": "^3.17.3",
+    "msmc": "^5.0.5",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.4",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.3.6",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.7",
+    "vite-plugin-electron": "^0.28.0",
+    "vite-plugin-electron-renderer": "^0.14.5",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.meowcraft.launcher",
+    "productName": "MeowCraft Launcher",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "prism-launcher",
+        "to": "prism-launcher",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "prism-data",
+        "to": "prism-data",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "hisokaSH",
+      "repo": "meowcraft_launcher",
+      "releaseType": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
