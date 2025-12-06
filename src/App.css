@@ -1,0 +1,76 @@
+/* Float animation for logo */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Hide scrollbar but keep mouse wheel scrolling functionality */
+
+/* For Chrome, Safari, Edge, and Opera */
+::-webkit-scrollbar {
+  width: 0px;
+  height: 0px;
+  display: none;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+/* For Firefox */
+* {
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
+
+/* For IE and Edge Legacy */
+body {
+  -ms-overflow-style: none;
+}
+
+/* Apply to all scrollable elements */
+html, body, div, #root {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+div::-webkit-scrollbar,
+#root::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Ensure smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Make sure scrolling still works */
+.overflow-y-auto {
+  overflow-y: auto !important;
+}
+
+/* Make title bar draggable */
+.title-bar {
+  -webkit-app-region: drag;
+}
+
+/* Keep buttons clickable */
+.title-bar button {
+  -webkit-app-region: no-drag;
+}
